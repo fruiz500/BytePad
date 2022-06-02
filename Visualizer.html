@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en" xml:lang="en" xmlns="http://www.w3.org/1999/xhtml" manifest="fileacci.appcache">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<title>File Visualizer</title>
+<meta name="Keywords" content="passlok, URSA, entropy, one-time pad, browser, encryption, decryption, symmetric, signature, javascript, PGP, PRISM, running-key">
+<meta name="Description" content="Files visualizer">
+<meta name="author" content="F. Ruiz">
+<meta name="robots" content="index">
+<meta name="viewport" content="width=device-width, minimum-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="tripletext-touch-icon.png">
+
+<!--CSS stylesheet containing the Light color scheme-->
+<style>
+html {
+	-webkit-text-size-adjust: 100%;
+	overflow-y: scroll;
+}
+body {
+	font-family: Sans-Serif;
+	font-size: large;
+	margin-left: 1%;
+	margin-right: 1%;
+	overflow: auto;
+	background-color: #FFFFFF;
+	color: #000000;
+}
+.cssbutton {
+	-webkit-border-radius: 0;
+	-moz-border-radius: 0;
+	border-radius: 10px;
+	font-family: Arial;
+	font-size: 18px;
+	padding: 10px;
+	text-decoration: none;
+	border: 0px;
+	margin-right: -2px;
+	color: #666666;
+	background: #e6e6e6;
+}
+.cssbutton:hover {
+	text-decoration: none;
+	cursor: pointer;
+	background: #d8d8d8;
+}
+.cssbutton:disabled {
+	color: #b7b7b7;
+	background: #f4f4f4;
+	cursor: default;
+}
+.cssbutton:disabled:hover {
+	color: #b7b7b7;
+	background: #f4f4f4;
+	cursor: default;
+}
+.cssbox {
+	-webkit-border-radius: 15px;
+	-moz-border-radius: 15px;
+	border-radius: 15px;
+	font-size: medium;
+	padding: 15px;
+	text-decoration: none;
+	width: 100%;
+	-webkit-appearance: none;
+	box-sizing: border-box;
+	-webkit-box-sizing: border-box;
+	-moz-box-sizing: border-box;
+	-webkit-box-shadow: none;
+	-moz-box-shadow: none;
+	box-shadow: none;
+	color: #000000;
+	background: #ffffee;
+	border: 1px solid #D3D3D3;
+	overflow: auto;
+}
+.custom-file-input {
+	color: #ffffff;
+}
+ .custom-file-input::-webkit-file-upload-button {
+ visibility: hidden;
+}
+.custom-file-input::before {
+	content: 'Select a file';
+	display: inline-block;
+	-webkit-border-radius: 10px;
+	-moz-border-radius: 10px;
+	border-radius: 10px;
+	font-family: Arial;
+	font-size: 18px;
+	padding: 36px;
+	border: 0px;
+	outline: none;
+	white-space: nowrap;
+	-webkit-user-select: none;
+	cursor: pointer;
+	text-decoration: none;
+	color: #666666;
+	background: #e6e6e6;
+}
+.custom-file-input:hover::before {
+	background: #c4c4c4;
+}
+.custom-file-input:active::before {
+	background: #c4c4c4;
+}
+input[type=radio] {
+	/* Larger radio buttons */
+	-ms-transform: scale(1.7); /* IE */
+	-moz-transform: scale(1.7); /* FF */
+	-webkit-transform: scale(1.7); /* Safari and Chrome */
+	-o-transform: scale(1.7); /* Opera */
+	padding: 0px;
+	cursor: pointer;
+	border: 1px solid #eeeeee;
+}
+#myCanvas {
+	width: 80%;
+}
+</style>
+
+<!--Now the JavaScript code-->
+<script>
+	
+//loads the file
+function loadFile(){
+	var fileToLoad = rndFile.files[0],
+		fileReader = new FileReader();
+	fileReader.onload = function(fileLoadedEvent){
+		var fileName = fileToLoad.name;
+		var buffer = fileLoadedEvent.target.result;
+		var dataArray = new Uint8Array(buffer);		//each element is 0-255, perfect for imaging
+		doComputation(dataArray,fileName)
+	};
+	fileReader.readAsArrayBuffer(fileToLoad, "UTF-8");
+}
+
+//this is the function that puts it all together. Called as soon as the file loads
+function doComputation(dataArray,fileName){
+	if(!dataArray){
+		rndMsg.textContent = 'Must load a key file or random file first';
+		return
+	}else{
+		rndMsg.textContent = fileName
+	}
+	var widthFromBox = Number(widthBox.value);
+	if(widthFromBox == 'NaN' || widthFromBox < 0 ){
+		rndMsg = '<span style="color:red;">The width must be a positive number</span>';
+		return
+	}
+	widthFromBox = Math.floor(widthFromBox);
+
+	var	widthFromFile = Math.floor(Math.sqrt(dataArray.length / 3));		//three 8-bit numbers per pixel
+		
+	var width = (widthFromBox == 0) ? widthFromFile : Math.min(widthFromBox,widthFromFile);
+	myCanvas.width = width;
+	myCanvas.height = width;								//resize canvas
+	
+	var ctx = myCanvas.getContext("2d");
+	var imgData = ctx.createImageData(width, width);
+	
+	//now fill the pixels with data from the file
+	for(var i = 0; i < width; i++){
+		for(var j = 0; j < width; j++){
+			var imgIndex = (i * width + j) * 4,
+				arrayIndex = (i * width + j) * 3;
+			imgData.data[imgIndex] = dataArray[arrayIndex];				//red channel
+			imgData.data[imgIndex + 1] = dataArray[arrayIndex + 1];		//green
+			imgData.data[imgIndex + 2] = dataArray[arrayIndex + 2];		//blue
+			imgData.data[imgIndex + 3] = 255;								//full alpha
+		}
+	}
+	ctx.putImageData(imgData, 0, 0);
+}
+	</script>
+</head>
+
+<body>
+<h1 align="center">File visualizer</h1>
+<p align="center">&#169; Francisco Ruiz, 2022</p>
+<p>This page an image where the pixels represent the data contained in the input file. Drag the file to the button, or click it to open a dialog.</p>
+<h3>Input File</h3>
+<input class="custom-file-input" type="file" id="rndFile"  onChange="loadFile();" onClick="this.value = '';" title="open dialog to select file to load"/>
+<span id="rndMsg">If there is any problem with the file, a warning will appear here; otherwise it will show the name</span>
+<p>The box below shows the size of the square image to be generated, in pixel height (equal to width). If 0 is input, the largest possible square image will be made.</p>
+<h3>Pixel width</h3>
+<p>
+  <input type="text" id="widthBox" style="font-size:larger;background-color:#E4F7FF;width:200px;" onClick="clearDone();" title="number of bits to be processed at a time (0 is all of them)" value="0">
+  </input>
+&nbsp;&nbsp;&nbsp;&nbsp;Allowed values are integers (default 0). Edit this before loading the file.</p>
+<h3>Output Image</h3>
+<canvas id='myCanvas' width='240' height='240'></canvas>
+</body>
+</html>

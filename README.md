@@ -1,2 +1,8 @@
 # BytePad
-File randomizer and encryption inspired by one-time pads
+File randomizer and encryption inspired by one-time pads.
+
+Normal computer files contain large amounts of entropy, which can be extracted for many uses such as pseudorandom number generation and encryption. This program manipulates the bytes of any file fed into it so the result passes statistical randomness tests. As a bonus, a second file can be encrypted by using the first file, after randomization, as a sort of one-time pad in order to produde a random-looking, hard to decrypt result.
+
+The randomized file is not a true one-time pad because it is not truly random, and therefore an encrypted file produced by this program is not theoretically impossible to decrypt without having the key, but it is much better from this standpoint than the result of encrypting with a key of limited bit length, as is commonly done with most encryption methods in use today. For instance, if the initial file fed to the randomizer is English text, then it contains an average of 1.56 bits of entropy per character, or about 1.56 bits per byte of file. This file can encrypt another file of half the length, so we have about 0.78 bits of entropy per byte of plainfile. For a 10 kB plainfile, this amounts to 7.8 kilobits of entropy. This is 30 times more than the 256 bits of the best algorithms in use today. Compressed files such as those in the .zip, .jpg, and .mp3 formats contain even more entropy, sometimes approaching the theoretical maximum of 1 bit of entropy per bit of file.
+
+The program has been optimized to run fast on Chrome and take large files as input. Files over 200 MB have been processed successfully. There is an additional utility to visualize the relative randomness of a file loaded onto it, without any further processing.
