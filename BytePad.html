@@ -244,47 +244,60 @@ function loadPlainFile(){
 	fileReader.readAsArrayBuffer(fileToLoad)
 }
 
-//columnar transposition of an array, with a given period
+//columnar transposition of an array, with a given period; faster version, based on math with the indices
 function transpose(array,rowLength){
 	var length = array.length,
-		output2d = [[]];	
+		rows = Math.ceil(length / rowLength),
+		m = length % rowLength,
+		output = new Uint8Array(length),
+		bigBlock = m * rows,
+		row,column;	
+	if(m == 0) m = rowLength;
 			
 	for(var i = 0; i < length; i++){
-		var block = i % rowLength;
-		if (output2d[block]){output2d[block].push(array[i])}else{output2d[block] = [array[i]]}
+		row = Math.floor(i / rowLength);
+		column = i % rowLength;
+		if(column <= m){				//long columns
+			output[row + column * rows] = array[i]
+		}else{								//short columns
+			output[bigBlock + row + (column - m)*(rows - 1)] = array[i]
+		}
 	}
 
-	return Uint8Array.from([].concat.apply([], output2d))
+	return output
 }
 
-//reverses the above
+//reverses the above; faster version, based on math with the indices
 function reverseTranspose(array,rowLength){
-	var	length = array.length,
-		output2d = [[]];
+	var length = array.length,
+		rows = Math.ceil(length / rowLength),
+		m = length % rowLength,
+		output = new Uint8Array(length),
+		row,column;	
+	if(m == 0) m = rowLength;
+	var bigBlock = m * rows;
 	
-	//long columns first, then the rest
-	var	columnLength = Math.ceil(length / rowLength),
-		maxLong = columnLength * (length % rowLength);
-	if(maxLong == 0) maxLong = length;
-	for(var i = 0; i < maxLong; i++){
-		var block = i % columnLength;
-		if (output2d[block]){output2d[block].push(array[i])}else{output2d[block] = [array[i]]}
-	}
-	for(var i = maxLong; i < length; i++){
-		var block = (i - maxLong) % (columnLength - 1);
-		if (output2d[block]){output2d[block].push(array[i])}else{output2d[block] = [array[i]]}
+	for(var i = 0; i < length; i++){
+		if(i < bigBlock){
+			row = i % rows;
+			column = Math.floor( i / rows)
+		}else{
+			row = (i - bigBlock) % (rows - 1);
+			column = m + Math.floor((i - bigBlock) / (rows - 1))
+		}
+		output[row * rowLength + column] = array[i]
 	}
 
-	return Uint8Array.from([].concat.apply([], output2d))
+	return output
 }
 
-//does only one row of byte LFG using xor, can be repeated
+//does only one row of byte LFG using sum, can be repeated
 function byteLFG(binArray){
 	var length = binArray.length,
 		output = new Uint8Array(length);
 	output[0] = binArray[length-1];
 	for(var i = 0; i < length - 1; i++){
-		output[i+1] = output[i] ^ binArray[i]
+		output[i+1] = (output[i] + binArray[i]) % 256
 	}
 	return output
 }
@@ -295,7 +308,7 @@ function reverseByteLFG(binArray){
 		output = new Uint8Array(length);
 	output[length-1] = binArray[0];
 	for(var i = length - 1; i >= 1; i--){
-		output[i-1] = binArray[i-1] ^ binArray[i]
+		output[i-1] = (256 + binArray[i] - binArray[i-1]) % 256
 	}
 	return output
 }
@@ -364,7 +377,7 @@ function doComputation(){
 		keyLength = keyBin.length;
 		
 	var cutIndex = Math.floor(keyLength * cutPercent / 100);			//cut operation
-	if(!reverseTick.checked) keyBin = concatUi8([keyBin.slice(cutIndex,keyLength), keyBin.slice(0,cutIndex)]);
+	if(!reverseTick.checked) keyBin = concatUi8([keyBin.slice(cutIndex,keyLength), keyBin.slice(0,cutIndex)]);		//cut done on whole key file
 	
 	if(typeof(plainBin) != 'undefined'){
 		var	plainLength = plainBin.length;
@@ -377,15 +390,14 @@ function doComputation(){
 			keyBin = concatUi8(holder);
 			keyMsg.innerHTML = '<span style="color:red;">The key file is too short. It has been repeated ' + repeats + ' times</span>'
 		}
-		
-		if(shortLength.checked){keyBin = keyBin.slice(0,plainLength * factor); keyLength = plainLength * factor;};
+
+		if(shortLength.checked){keyBin = keyBin.slice(- plainLength * factor); keyLength = plainLength * factor;}	//start at the end
 	}
 
-	//key string is cut to size, now process it unless it's already from a random file
-	//done in blocks if so set up. Two-pass LFG + transposition
+	//key string is cut to size, now process it; done in blocks if so set up. Two-pass LFG + transposition
 	var blockLength = lengthBox.value,
 		whiteBin = new Uint8Array(whiteningBox.value.split(','));
-  if(blockLength != '1'){
+  if(blockLength != '1'){												//no processing if block length is 1
 	if(blockLength == '0') blockLength = keyLength;
 	var nBlocks = Math.ceil(keyLength / blockLength),
 		period = Math.ceil(Math.sqrt(blockLength));
@@ -398,7 +410,6 @@ function doComputation(){
 
 	var newBin = new Uint8Array(whiteBin),
 		oldBin = new Uint8Array(whiteBin);
-	var resultArray = new Array(nBlocks);
 	for(var i = 0; i < nBlocks; i++){
 		if(reverseTick.checked){
 			newBin = keyBin.slice(i*blockLength,(i+1)*blockLength);
@@ -415,7 +426,7 @@ function doComputation(){
 		}
 	}
 	window.resultBin = concatUi8(resultArray)			//concatenate all blocks at the end, since creating a Uint8Array is slow; resultBin is global
-  }else{										//if already random, skip all the process
+  }else{													//if blocklength is 1, skip all the process
 	window.resultBin = keyBin  
   }
   	if(reverseTick.checked) resultBin = concatUi8([resultBin.slice(keyLength-cutIndex,keyLength), resultBin.slice(0,keyLength-cutIndex)]);		//undo cut if reversing
@@ -427,7 +438,7 @@ function doComputation(){
 	if(randTest.checked) keystreamQuality(resultBin);
 	statistics.style.display = 'block';
 	
-	//finish off with encryption or decryption
+		//finish off with encryption or decryption
 	if(typeof(plainBin) != 'undefined'){
 		cutPercent = Number(cutBox2.value);										//different from the cut on the key file, but the variables can be reused
 		if(cutPercent == 'NaN' || cutPercent < 0 || cutPercent > 100){
@@ -508,14 +519,14 @@ function getMac(inputBin){
 	return halfArray(macBin)				//get only 16 bytes of output by xoring the halves (with the 1st half transposed)
 }
 
-//converts unit8array into hex string, from Stack Overflow
+//converts unit8array into hex string, from StackOverflow
 function toHexString(byteArray) {
   return Array.from(byteArray, function(byte) {
     return ('0' + (byte & 0xFF).toString(16)).slice(-2);
   }).join('')
 }
 
-//displays quality of the binary keystream. Performs five tests: single digit Chi-squared, Durbin-Watson (both compared to the uniform distribution), Shannon's entropy, runs test, and Chi-squared independence test at distances from 1 to 10
+//displays quality of the byte keystream. Performs four tests: single digit Chi-squared, Durbin-Watson (both compared to the uniform distribution), Shannon's entropy, and runs test; a fifth test of Chi-squared independence test at distances is not done because it would be too long; the algorithm is here, though
 function keystreamQuality(array){
 	freqArray = frequencies(array);				//global variable
 	var chiNumber = chiSquared(array),
@@ -690,10 +701,10 @@ downloadURL = function(data, fileName) {
 <p>The algorithms used are:</p>
 <ol>
   <li><a href="https://en.wikipedia.org/wiki/Transposition_cipher#Columnar_transposition" target="_blank">Columnar transposition</a>: write down the byte stream in rows of a given length, then read the result by columns. This separates bytes that are correlated because they are near each other in the file. Separation is maximized if the row length is the square root of the block length.</li>
-  <li><a href="https://en.wikipedia.org/wiki/Lagged_Fibonacci_generator" target="_blank">Lagged Fibonacci generator</a> (LFG): take the last byte and write it under the first byte, and then make a new second row by writing down the result of XORing the top and bottom bytes immediately to the left. The process can be repeated as many times as one desires, always resulting in a byte array of the same length as the original. The effect of this is that every original byte affects all bytes that follow, if applied once, or all bytes in the output, if applied twice or more times.</li>
-  <li>XOR two halves of the byte stream. This makes it almost impossible to reverse the above processes, which are intrinsically reversible, if the byte stream prior to this step has good randomness statistics. It also reduces the length by a factor of two.</li>
+  <li><a href="https://en.wikipedia.org/wiki/Lagged_Fibonacci_generator" target="_blank">Lagged Fibonacci generator</a> (LFG): take the last byte and write it under the first byte, and then make a new second row by writing down the result of adding the top and bottom bytes (mod 256) immediately to the left. The process can be repeated as many times as one desires, always resulting in a byte array of the same length as the original. The effect of this is that every original byte affects all bytes that follow, if applied once, or all bytes in the output, if applied twice or more times.</li>
+  <li>xor two halves of the byte stream. This makes it almost impossible to reverse the above processes, which are intrinsically reversible, if the byte stream prior to this step has good randomness statistics. It also reduces the length by a factor of two.</li>
 </ol>
-<p>LFG operations tends to introduce spurious correlations that need to be ironed out by transposition. Also, bytes in a single LFG (except the last) only affect those that follow them. Therefore the basic algorithm is two LFGs with a transposition between them. The result is still reversible so, if you don't want that,  do the XOR thing (there's a checkbox for that below).</p>
+<p>LFG operations tends to introduce spurious correlations that need to be ironed out by transposition. Also, bytes in a single LFG (except the last) only affect those that follow them. Therefore the basic algorithm is two LFGs with a transposition between them. The result is still reversible so, if you don't want that,  do the xor thing (there's a checkbox for that below).</p>
 <p>&nbsp;</p>
 <h2>Step 1. Key file input</h2>
 <p>We might begin by taking a file from the computer and loading it in the box below. Although invisible here, the file will be loaded as a byte array.</p>
@@ -729,19 +740,19 @@ downloadURL = function(data, fileName) {
 <p>Adding a repeating sequence at start the process for the first block helps with files of poor randomness. If you check the Whitening box the sequence will also be  xored after processing each block, which adds extra security if the sequence is kept secret.</p>
 <h3>Initial sequence</h3>
 <p>
-  <input type="text" id="whiteningBox" style="font-size:larger;background-color:#E4F7FF;width:300px;" onClick="clearDone();" title="write here a sequence of 8-bit numbers to be used for whitening" value="7,17,23,37,41,61,73,191">
+  <input type="text" id="whiteningBox" style="font-size:larger;background-color:#E4F7FF;width:300px;" onClick="clearDone();" title="write here a sequence of 8-bit numbers to be used for whitening" value="1">
   &nbsp;
   <input type="checkbox" id="whiteTick" title='use for whitening after each block process'/>
 &nbsp; Whitening
   </input>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Preferred values are integers 0 to 255, separated by commas (default 7,17,23,37,41,61,73,191), though it will take any integers.</p>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Preferred values are integers 0 to 255, separated by commas (default 1), though it will take any list of integers.</p>
 <p>We can keep reusing the key file so long as we "cut" it at a different point each time, just as a deck of cards is cut in two and the bottom part is the placed at the top. The place for the cut will be entered as a percentage of the total, from 0% (no cut), to 100% (again, no cut), including decimals. The cut operation is applied right at the start.</p>
 <h3>Cut location (percent)</h3>
 <p>
-  <input type="text" id="cutBox" style="font-size:larger;background-color:#E4F7FF;width:200px;" onClick="clearDone();" title="percentage at the cut" value="60">
+  <input type="text" id="cutBox" style="font-size:larger;background-color:#E4F7FF;width:200px;" onClick="clearDone();" title="percentage at the cut" value="10">
 %
 </input>
-&nbsp;&nbsp;&nbsp;&nbsp;Allowed values are 0 to 100. Decimals are OK. Files of poor entropy do better is this is 50 or higher.</p>
+&nbsp;&nbsp;&nbsp;&nbsp;Allowed values are 0 to 100. Decimals are OK.</p>
 <br>
 <h2>Step 2. Plain file / encrypted file</h2>
 <p>Here we can optionally input a second file, which also loads as a byte array. If the key file is too small to encrypt this file, a warning will appear above. If the file is encrypted and the key file and all settings are the same as for encryption, it will be decrypted below. A cut operation using the percentage below will be applied to the plain file content at the start, and the reverse cut to the resulting encrypted material at the end of the process. In order to overcome the malleability of the encryption process, you can make a message authentication code (MAC). The algorithm for this is explained below.</p>
@@ -797,13 +808,13 @@ downloadURL = function(data, fileName) {
 </table>
 
 <h2>Step 4. Encrypted / decrypted file</h2>
-<p>And here is the second file after its bits have been XORed with an equal number of bytes from the keystream file, starting from the beginning. There is a button to save this one too, as well as one to make a message authentication code (MAC) for this file. For added security, take the MAC of the input file (button in Step 2 above) when encrypting and send it along with the encrypted file. The MAC of the decrypted file, taken with the button below, should be the same. The algorithm that makes the MAC is described below.</p>
+<p>And here is the second file after its bits have been xored with an equal number of bytes from the keystream file, starting from the beginning. There is a button to save this one too, as well as one to make a message authentication code (MAC) for this file. For added security, take the MAC of the input file (button in Step 2 above) when encrypting and send it along with the encrypted file. The MAC of the decrypted file, taken with the button below, should be the same. The algorithm that makes the MAC is described below.</p>
 
 <h3>Encrypted/decrypted file</h3>
 <span id="cipherBox" class="cssbox" style="font-size:larger;background-color:#DCF2D1;width:500px;" contenteditable="true"></span>&nbsp;&nbsp;<button class="cssbutton" id="savePlainBtn" onClick="savePlain();">Save</button>&nbsp;&nbsp;
 <button class="cssbutton" id="cipherMACBtn" onClick="clearDone(); cipherMAC();">MAC</button>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="cipherMACmsg"></span>
 
-<p> This is how the MAC is made: take the initial byte sequence, expand it to 32 bytes, and XOR it with the first 32 bytes of the input file (no cut), then take the LFG and a transposition with row length 6, XOR 32 bytes of the key bytes (after cut) and do another LFG. Repeat the process for all the remaining file bytes, using the previous 32-byte result instead of the initial sequence, and the following 32 bytes of the plain and key files, stretched to 32-byte length with zeros if necessary. At the end, split the result in the middle and XOR the two halves to get 16 bytes, which are then converted to hexadecimal for display.</p>
+<p> This is how the MAC is made: take the initial byte sequence, expand it to 32 bytes, and xor it with the first 32 bytes of the input file (no cut), then take the LFG and a transposition with row length 6, xor 32 bytes of the key bytes (after cut) and do another LFG. Repeat the process for all the remaining file bytes, using the previous 32-byte result instead of the initial sequence, and the following 32 bytes of the plain and key files, stretched to 32-byte length with zeros if necessary. At the end, split the result in the middle and xor the two halves to get 16 bytes, which are then converted to hexadecimal for display.</p>
 </body>
 </html>
