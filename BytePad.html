@@ -225,9 +225,11 @@ function loadKeyFile(){
 		keyFileName = fileToLoad.name;
 		keyBox.textContent = keyFileName;
 		window.keyFileBin = new Uint8Array(fileLoadedEvent.target.result);			//using byte arrays
-		showImage(keyCanvas,keyFileBin);
 		keyMsg.innerHTML = 'File size: ' + keyFileBin.length + ' bytes';
-		keyImage.style.display = 'block'
+		if(imageTick.checked){
+			showImage(keyCanvas,keyFileBin);
+			keyImage.style.display = 'block'
+		}
 	};
 	fileReader.readAsArrayBuffer(fileToLoad)
 }
@@ -360,6 +362,15 @@ function clearDone(){
 	keyMsg.innerHTML = '';
 }
 
+//to get a block of key given the beginning and end
+function getKeyBlock(beginBlock, endBlock){
+	if(beginBlock < endBlock){
+		return keyFileBin.slice(beginBlock,endBlock)
+	}else{
+		return concatUi8([keyFileBin.slice(beginBlock,keyFileBin.length),keyFileBin.slice(0,endBlock)])		//in case a block straddles the end of the key file
+	}
+}
+
 //this is the function that puts it all together. Called by the Execute button
 function doComputation(){
 	if(!keyFileBin){
@@ -372,71 +383,73 @@ function doComputation(){
 		return
 	}
 	statistics.style.display = '';
-	
-	var keyBin = new Uint8Array(keyFileBin),
-		keyLength = keyBin.length;
-		
-	var cutIndex = Math.floor(keyLength * cutPercent / 100);			//cut operation
-	if(!reverseTick.checked) keyBin = concatUi8([keyBin.slice(cutIndex,keyLength), keyBin.slice(0,cutIndex)]);		//cut done on whole key file
-	
-	if(typeof(plainBin) != 'undefined'){
-		var	plainLength = plainBin.length;
-		var	factor = halfTick.checked ? 2 : 1;				//if the keystream is to be non-reversible, take a double number of bytes
-					
-		if(keyLength < plainLength * factor){				//repeat key file if it is too short
-			var repeats = Math.ceil(plainLength * factor / keyLength),
-				holder = new Array(repeats);
-			for(var i = 0; i < repeats; i++) holder[i] = keyBin;
-			keyBin = concatUi8(holder);
-			keyMsg.innerHTML = '<span style="color:red;">The key file is too short. It has been repeated ' + repeats + ' times</span>'
-		}
 
-		if(shortLength.checked){keyBin = keyBin.slice(- plainLength * factor); keyLength = plainLength * factor;}	//start at the end
+	var keyFileLength = keyFileBin.length,
+		cutIndex = Math.floor(keyFileLength * cutPercent / 100);			//beginning in key file
+	
+	if(typeof(plainBin) != 'undefined' && shortLength.checked){
+		var	plainLength = plainBin.length,				
+			keyLength = plainLength * (halfTick.checked ? 2 : 1),							//if the keystream is to be non-reversible, take a double number of bytes
+			startIndex = (keyFileLength + (reverseTick.checked ? 0 : cutIndex) - keyLength) % keyFileLength;		//start at the end
+	}else{
+		var keyLength = keyFileLength,
+			startIndex = reverseTick.checked ? 0 : cutIndex
 	}
 
 	//key string is cut to size, now process it; done in blocks if so set up. Two-pass LFG + transposition
 	var blockLength = lengthBox.value,
 		whiteBin = new Uint8Array(whiteningBox.value.split(','));
   if(blockLength != '1'){												//no processing if block length is 1
-	if(blockLength == '0') blockLength = keyLength;
+	if(blockLength == '0') blockLength = keyLength;					//do the whole thing as one block if block length is 0
 	var nBlocks = Math.ceil(keyLength / blockLength),
-		period = Math.ceil(Math.sqrt(blockLength));
-	var resultArray = new Array(nBlocks);
-
-	var repeats = Math.ceil(blockLength / whiteBin.length),								//initialize block
+		period = Math.ceil(Math.sqrt(blockLength)),
+		lastLength = keyLength % blockLength,
+		resultArray = new Array(nBlocks),
+		repeats = Math.ceil(blockLength / whiteBin.length),								//initialize block
 		holder = new Array(repeats);
+
 	for(var i = 0; i < repeats; i++) holder[i] = whiteBin;
 	whiteBin = concatUi8(holder).slice(0,blockLength);
 
 	var newBin = new Uint8Array(whiteBin),
-		oldBin = new Uint8Array(whiteBin);
+		oldBin = new Uint8Array(whiteBin),
+		beginBlock,endBlock;
+
 	for(var i = 0; i < nBlocks; i++){
+		beginBlock = (startIndex + i*blockLength) % keyFileLength;		
+		if(i != nBlocks - 1){
+			endBlock = (startIndex + (i+1)*blockLength) % keyFileLength
+		}else{																					//last block is shorter
+			endBlock = (startIndex + i*blockLength + lastLength) % keyFileLength
+		}
 		if(reverseTick.checked){
-			newBin = keyBin.slice(i*blockLength,(i+1)*blockLength);
+			newBin = getKeyBlock(beginBlock,endBlock);
 			if(whiteTick.checked) newBin = arrayXor(whiteBin,newBin);														//undo whitening
 			newBin = reverseByteLFG(arrayXor(oldBin,reverseTranspose(reverseByteLFG(newBin),period)));					//the core; xor previous result after transpose
-			oldBin = keyBin.slice(i*blockLength,(i+1)*blockLength);
-			
+			oldBin = getKeyBlock(beginBlock,endBlock);		
 			resultArray[i] = newBin
 		}else{
 			oldBin = newBin;
-			newBin = byteLFG(transpose(arrayXor(oldBin,byteLFG(keyBin.slice(i*blockLength,(i+1)*blockLength))),period));	//the core; xor previous result before transpose
+			newBin = getKeyBlock(beginBlock,endBlock);
+			newBin = byteLFG(transpose(arrayXor(oldBin,byteLFG(newBin)),period));						//the core; xor previous result before transpose
 			if(whiteTick.checked) newBin = arrayXor(whiteBin,newBin);															//whitening step
 			resultArray[i] = newBin
 		}
 	}
 	window.resultBin = concatUi8(resultArray)			//concatenate all blocks at the end, since creating a Uint8Array is slow; resultBin is global
-  }else{													//if blocklength is 1, skip all the process
-	window.resultBin = keyBin  
+  }else{													//if blocklength is 1, skip all the process  
+	window.resultBin = keyFileBin.slice(startIndex,startIndex + keyLength)
   }
   	if(reverseTick.checked) resultBin = concatUi8([resultBin.slice(keyLength-cutIndex,keyLength), resultBin.slice(0,keyLength-cutIndex)]);		//undo cut if reversing
   	if(halfTick.checked) resultBin = halfArray(resultBin);		//xor the two halves of the keystream in order to make it non-reversible
 	keystreamBox.textContent = keyFileName
 
 		//display statistics
-	showImage(resultCanvas,resultBin);
-	if(randTest.checked) keystreamQuality(resultBin);
-	statistics.style.display = 'block';
+	if(randTest.checked){
+		showImage(resultCanvas,resultBin);
+		keystreamQuality(resultBin);
+		statistics.style.display = 'block'
+	}
 	
 		//finish off with encryption or decryption
 	if(typeof(plainBin) != 'undefined'){
@@ -486,11 +499,9 @@ function getMac(inputBin){
 		keyMsg = '<span style="color:red;">The cut must be between 0 and 100</span>';
 		return
 	}
-	var keyBin = new Uint8Array(keyFileBin),
-		keyLength = keyBin.length;
-		
-	var cutIndex = Math.floor(keyLength * cutPercent / 100);			//cut operation for the key
-	keyBin = concatUi8([keyBin.slice(cutIndex,keyLength), keyBin.slice(0,cutIndex)]);
+
+	var keyFileLength = keyFileBin.length;	
+		cutIndex = Math.floor(keyFileLength * cutPercent / 100);			//cut operation for the key
 	
 	//now do the cut for the input file
 	cutPercent = Number(cutBox2.value);
@@ -498,9 +509,9 @@ function getMac(inputBin){
 		keyMsg = '<span style="color:red;">The cut must be between 0 and 100</span>';
 		return
 	}
-	var inputLength = inputBin.length;
-	cutIndex = Math.floor(inputLength * cutPercent / 100);			//cut operation for the plain file
-	inputBin = concatUi8([inputBin.slice(cutIndex,inputLength), inputBin.slice(0,cutIndex)]);
+	var inputLength = inputBin.length,
+		inputCutIndex = Math.floor(inputLength * cutPercent / 100);			//cut operation for the plain file
+	inputBin = concatUi8([inputBin.slice(inputCutIndex,inputLength), inputBin.slice(0,inputCutIndex)]);
 	
 	//the process proper begins here
 	var	whiteBin = new Uint8Array(whiteningBox.value.split(',')),
@@ -511,10 +522,13 @@ function getMac(inputBin){
 	
 	var macBin = new Uint8Array(whiteBin),					//start with the whitening data
 		nBlocks = Math.ceil(inputLength / 32);
+
 	for(var i = 0; i < nBlocks; i++){
-			macBin = arrayXor(inputBin.slice(i*32,(i+1)*32),macBin);				//xor a piece of the plaintext, and 
-			macBin = transpose(byteLFG(macBin),6);  								//shuffle the result with LFG + transposition. Observe that row length is 6
-			macBin = byteLFG(arrayXor(keyBin.slice(i*32,(i+1)*32),macBin))		//last LFG after xoring key
+		beginBlock = (cutIndex + i*32) % keyFileLength;		
+		endBlock = (cutIndex + (i+1)*32) % keyFileLength
+		macBin = arrayXor(inputBin.slice(i*32,(i+1)*32),macBin);				//xor a piece of the plaintext, and 
+		macBin = transpose(byteLFG(macBin),6);  								//shuffle the result with LFG + transposition. Observe that row length is 6
+		macBin = byteLFG(arrayXor(getKeyBlock(beginBlock,endBlock),macBin))		//last LFG after xoring key
 	}
 	return halfArray(macBin)				//get only 16 bytes of output by xoring the halves (with the 1st half transposed)
 }
@@ -707,7 +721,7 @@ downloadURL = function(data, fileName) {
 <p>LFG operations tends to introduce spurious correlations that need to be ironed out by transposition. Also, bytes in a single LFG (except the last) only affect those that follow them. Therefore the basic algorithm is two LFGs with a transposition between them. The result is still reversible so, if you don't want that,  do the xor thing (there's a checkbox for that below).</p>
 <p>&nbsp;</p>
 <h2>Step 1. Key file input</h2>
-<p>We might begin by taking a file from the computer and loading it in the box below. Although invisible here, the file will be loaded as a byte array.</p>
+<p>We might begin by taking a file from the computer and loading it in the box below. Although invisible here, the file will be loaded as a byte array. Uncheck the box to save memory for large files.</p>
 <h3>Key File</h3>
 <table id="keyFileTable">
 <tr>
@@ -715,7 +729,9 @@ downloadURL = function(data, fileName) {
 <div name="keyBox" class="cssbox" id="keyBox" style="font-size:larger;background-color:#E4F7FF;width:500px;" title="Enter the key text taken from a book or whatever here"></div>
 <button class="cssbutton" id="clearKeyBtn" onClick="keyBox.innerHTML = '';clearDone(); delete keyFileBin; keyImage.style.display = '';">Clear</button>&nbsp;&nbsp;
 <input class="custom-file-input" type="file" id="keyFile"  onChange="loadKeyFile();" onClick="this.value = '';clearDone();" title="open dialog to select file to load"/>
-<br><br>
+&nbsp;
+  <input type="checkbox" id="imageTick" title='show file as an image' checked/>
+&nbsp;Show as image<br><br>
 <div id="keyMsg">If there is any problem with the file, a warning will appear here</div>
 </td>
 <td id='keyImage'>
