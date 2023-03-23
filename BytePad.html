@@ -212,10 +212,15 @@ opacity: 0;
 }
 </style>
 
+<!--ZLIB.JS compression by Imaya, from https://github.com/imaya/zlib.js-->
+<script src="rawdeflate.min.js"></script>
+<script src="rawinflate.min.js"></script>
+
 <!--Now the JavaScript code-->
 <script>
 var	keyFileName = '',
-	plainFileName = '';
+	plainFileName = '',
+    plainCompressed = false;
 
 //loads the key file into memory
 function loadKeyFile(){
@@ -225,13 +230,19 @@ function loadKeyFile(){
 		keyFileName = fileToLoad.name;
 		keyBox.textContent = keyFileName;
 		window.keyFileBin = new Uint8Array(fileLoadedEvent.target.result);			//using byte arrays
-		keyMsg.innerHTML = 'File size: ' + keyFileBin.length + ' bytes';
-		if(imageTick.checked){
-			showImage(keyCanvas,keyFileBin);
-			keyImage.style.display = 'block'
-		}
-	};
-	fileReader.readAsArrayBuffer(fileToLoad)
+        if(withCompr.checked){                                                      //compression done on file load
+            var deflate = new Zlib.RawDeflate(keyFileBin);
+            keyFileBin = deflate.compress()
+        }
+        keyMsg.innerHTML = 'File size: ' + keyFileBin.length + ' bytes';
+	    if(imageTick.checked){
+	    	showImage(keyCanvas,keyFileBin);
+		    keyImage.style.display = 'block'
+	    }
+		keyFile.type = '';
+		keyFile.type = 'file'
+    };
+    fileReader.readAsArrayBuffer(fileToLoad)
 }
 
 //loads the plain file into memory
@@ -242,6 +253,10 @@ function loadPlainFile(){
 		plainFileName = fileToLoad.name;
 		plainBox.textContent = plainFileName;
 		window.plainBin = new Uint8Array(fileLoadedEvent.target.result);
+        plainMAC();                             //do this now and save a button
+        plainCompressed = false;
+		plainFile.type = '';
+		plainFile.type = 'file'
 	};
 	fileReader.readAsArrayBuffer(fileToLoad)
 }
@@ -316,12 +331,12 @@ function reverseByteLFG(binArray){
 }
 
 //to perform a XOR of unequal length byte arrays; output has the length of the 2nd argument
-function arrayXor(keystreamBin, plainBin){
-	var plainLength = plainBin.length,
-		keyLength = keystreamBin.length,
-		output = new Uint8Array(plainLength);
-	for(var i = 0; i < plainLength; i++){
-		output[i] = keyLength >= plainLength ? keystreamBin[i] ^ plainBin[i] : plainBin[i]
+function arrayXor(firstBin, secondBin){
+	var secondLength = secondBin.length,
+		firstLength = firstBin.length,
+		output = new Uint8Array(secondLength);
+	for(var i = 0; i < secondLength; i++){
+		output[i] = firstLength >= secondLength ? firstBin[i] ^ secondBin[i] : secondBin[i]
 	}
 	return output
 }
@@ -363,52 +378,80 @@ function clearDone(){
 }
 
 //to get a block of key given the beginning and end
-function getKeyBlock(beginBlock, endBlock){
-	if(beginBlock < endBlock){
-		return keyFileBin.slice(beginBlock,endBlock)
-	}else{
-		return concatUi8([keyFileBin.slice(beginBlock,keyFileBin.length),keyFileBin.slice(0,endBlock)])		//in case a block straddles the end of the key file
-	}
+function getKeyBlock(beginBlock, endBlock, keyRepeats){
+    var keyFileLength = keyFileBin.length;
+    if(keyRepeats == 0){
+	    if(beginBlock < endBlock){
+		    return keyFileBin.slice(beginBlock,endBlock)
+	    }else{
+		    return concatUi8([keyFileBin.slice(beginBlock,keyFileLength),keyFileBin.slice(0,endBlock)])		//in case a block straddles the end of the key file
+	    }
+    }else{
+        var extraCopy = beginBlock < endBlock ? 0 : 1,
+            extraKey = new Uint8Array(keyFileLength * (keyRepeats - 1 + extraCopy));            //contains several copies of the key file
+        for(var i = 0; i < keyRepeats - 1 + extraCopy; i++){
+            for(var j = 0; j < keyFileLength; j++){
+                extraKey[i*keyFileLength + j] = keyFileBin[j]
+            }
+        }
+        return concatUi8([keyFileBin.slice(beginBlock,keyFileLength),extraKey,keyFileBin.slice(0,endBlock)])
+    }
 }
 
 //this is the function that puts it all together. Called by the Execute button
 function doComputation(){
 	if(!keyFileBin){
-		keyMsg = '<span style="color:red;">Must load a key file or random file first</span>';
+		keyMsg.innerHTML = '<span style="color:red;">Must load a key file or random file first</span>';
 		return
 	}
 	var cutPercent = Number(cutBox.value);
 	if(cutPercent == 'NaN' || cutPercent < 0 || cutPercent > 100){
-		keyMsg = '<span style="color:red;">The cut must be between 0 and 100</span>';
+		keyMsg.innerHTML = '<span style="color:red;">The cut must be between 0 and 100</span>';
 		return
 	}
 	statistics.style.display = '';
 
 	var keyFileLength = keyFileBin.length,
 		cutIndex = Math.floor(keyFileLength * cutPercent / 100);			//beginning in key file
-	
-	if(typeof(plainBin) != 'undefined' && shortLength.checked){
-		var	plainLength = plainBin.length,				
-			keyLength = plainLength * (halfTick.checked ? 2 : 1),							//if the keystream is to be non-reversible, take a double number of bytes
-			startIndex = (keyFileLength + (reverseTick.checked ? 0 : cutIndex) - keyLength) % keyFileLength;		//start at the end
-	}else{
-		var keyLength = keyFileLength,
-			startIndex = reverseTick.checked ? 0 : cutIndex
-	}
+
+    if(typeof(plainBin) != 'undefined'){
+        if(withComprPlain.checked && !plainCompressed){         //plain file compression if so set
+            var deflate = new Zlib.RawDeflate(plainBin);
+            plainBin = deflate.compress();
+            plainCompressed = true
+        }
+        if(!withComprPlain.checked && plainCompressed){
+            execMsg.innerHTML = '<span style="color:red;">The plain or cipher file is compressed. Please reload it</span>';
+            return
+        }
+        var	plainLength = plainBin.length;
+        if(shortLength.checked){			
+			var keyLength = plainLength * (halfTick.checked ? 2 : 1),							//if the keystream is to be non-reversible, take a double number of bytes
+			    startIndex = (keyFileLength + (forwardTick.checked ? cutIndex : 0) - keyLength) % keyFileLength;		//start at the end
+	    }else{
+		    var keyLength = keyFileLength,
+			    startIndex = forwardTick.checked ? cutIndex : 0
+	    }
+        while(startIndex < 0) startIndex += keyFileLength
+    }else{
+        var keyLength = keyFileLength,
+			startIndex = forwardTick.checked ? cutIndex : 0
+    }
 
 	//key string is cut to size, now process it; done in blocks if so set up. Two-pass LFG + transposition
-	var blockLength = lengthBox.value,
+	var blockLength = parseInt(lengthBox.value),
 		whiteBin = new Uint8Array(whiteningBox.value.split(','));
-  if(blockLength != '1'){												//no processing if block length is 1
-	if(blockLength == '0') blockLength = keyLength;					//do the whole thing as one block if block length is 0
+  if(blockLength != 0){												//no processing if block length is 0
+	if(blockLength < 0) blockLength = keyLength;					//do the whole thing as one block if block length is negative
 	var nBlocks = Math.ceil(keyLength / blockLength),
 		period = Math.ceil(Math.sqrt(blockLength)),
-		lastLength = keyLength % blockLength,
+		lastLength = keyLength % blockLength || blockLength,        //should not be zero
 		resultArray = new Array(nBlocks),
-		repeats = Math.ceil(blockLength / whiteBin.length),								//initialize block
-		holder = new Array(repeats);
+        keyRepeats = Math.floor(blockLength / keyFileLength),        //at least one, if partial
+		whiteRepeats = Math.ceil(blockLength / whiteBin.length),	//initialize block
+		holder = new Array(whiteRepeats);
 
-	for(var i = 0; i < repeats; i++) holder[i] = whiteBin;
+	for(var i = 0; i < whiteRepeats; i++) holder[i] = whiteBin;
 	whiteBin = concatUi8(holder).slice(0,blockLength);
 
 	var newBin = new Uint8Array(whiteBin),
@@ -422,25 +465,34 @@ function doComputation(){
 		}else{																					//last block is shorter
 			endBlock = (startIndex + i*blockLength + lastLength) % keyFileLength
 		}
-		if(reverseTick.checked){
-			newBin = getKeyBlock(beginBlock,endBlock);
-			if(whiteTick.checked) newBin = arrayXor(whiteBin,newBin);														//undo whitening
-			newBin = reverseByteLFG(arrayXor(oldBin,reverseTranspose(reverseByteLFG(newBin),period)));					//the core; xor previous result after transpose
-			oldBin = getKeyBlock(beginBlock,endBlock);		
-			resultArray[i] = newBin
-		}else{
-			oldBin = newBin;
-			newBin = getKeyBlock(beginBlock,endBlock);
+		if(forwardTick.checked){
+            oldBin = newBin;
+			newBin = getKeyBlock(beginBlock,endBlock,keyRepeats);
 			newBin = byteLFG(transpose(arrayXor(oldBin,byteLFG(newBin)),period));						//the core; xor previous result before transpose
 			if(whiteTick.checked) newBin = arrayXor(whiteBin,newBin);															//whitening step
+			resultArray[i] = newBin
+		}else{
+			newBin = getKeyBlock(beginBlock,endBlock,keyRepeats);
+			if(whiteTick.checked) newBin = arrayXor(whiteBin,newBin);														//undo whitening
+			newBin = reverseByteLFG(arrayXor(oldBin,reverseTranspose(reverseByteLFG(newBin),period)));					//the core; xor previous result after transpose
+			oldBin = getKeyBlock(beginBlock,endBlock,keyRepeats);		
 			resultArray[i] = newBin
 		}
 	}
 	window.resultBin = concatUi8(resultArray)			//concatenate all blocks at the end, since creating a Uint8Array is slow; resultBin is global
-  }else{													//if blocklength is 1, skip all the process  
-	window.resultBin = keyFileBin.slice(startIndex,startIndex + keyLength)
+  }else{													//if blocklength is 0, skip all the process  
+	window.resultBin = getKeyBlock(startIndex,(startIndex + keyLength) % keyFileLength,Math.floor(keyLength / keyFileLength))
   }
-  	if(reverseTick.checked) resultBin = concatUi8([resultBin.slice(keyLength-cutIndex,keyLength), resultBin.slice(0,keyLength-cutIndex)]);		//undo cut if reversing
+  	if(!forwardTick.checked) resultBin = concatUi8([resultBin.slice(keyLength-cutIndex,keyLength), resultBin.slice(0,keyLength-cutIndex)]);		//undo cut if reversing
+    if(reverseDecTick.checked){                         //decompress key file; makes sense with reverse process
+        var inflate = new Zlib.RawInflate(resultBin);
+        try {
+            resultBin = inflate.decompress()
+        } catch (error) {
+            execMsg.innerHTML = '<span style="color:red;">Error in key file decompression</span>';
+            return
+        }     
+    }
   	if(halfTick.checked) resultBin = halfArray(resultBin);		//xor the two halves of the keystream in order to make it non-reversible
 	keystreamBox.textContent = keyFileName
 
@@ -455,16 +507,29 @@ function doComputation(){
 	if(typeof(plainBin) != 'undefined'){
 		cutPercent = Number(cutBox2.value);										//different from the cut on the key file, but the variables can be reused
 		if(cutPercent == 'NaN' || cutPercent < 0 || cutPercent > 100){
-			plainMACmsg = '<span style="color:red;">The cut must be between 0 and 100</span>';
+			execMsg = '<span style="color:red;">The cut must be between 0 and 100</span>';
 		return
 		}
 		cutIndex = Math.floor(plainLength * cutPercent / 100);																//for cut operation prior to encryption, applied to the plain file
-		window.cipherBin = arrayXor(resultBin, concatUi8([plainBin.slice(cutIndex,plainLength), plainBin.slice(0,cutIndex)]));
+		window.cipherBin = arrayXor(resultBin,concatUi8([plainBin.slice(cutIndex,plainLength), plainBin.slice(0,cutIndex)]));
 		cutIndex = plainLength - cutIndex;																					//for reverse cut after encryption, applied to the cipher file
 		cipherBin = concatUi8([cipherBin.slice(cutIndex,plainLength), cipherBin.slice(0,cutIndex)]);
-		cipherBox.textContent = plainFileName
+
+        if(withDecomprPlain.checked){                       //decompress at the end if so chosen
+            var inflate = new Zlib.RawInflate(cipherBin);
+            try {
+                cipherBin = inflate.decompress()
+            } catch (error) {
+                execMsg.innerHTML = '<span style="color:red;">Error in plain/cipher file decompression</span>';
+                return
+            }
+            
+        }
+
+		cipherBox.textContent = plainFileName;
+        cipherMAC()
 	}
-	execMsg.innerHTML = 'Done! See the result below'
+	execMsg.innerHTML = '<span style="color:green;">Done! See the result below</span>'
 }
 
 //these two make and display a Message Authentication Code (MAC) for the plaintext and the ciphertext, respectively
@@ -500,7 +565,7 @@ function getMac(inputBin){
 		return
 	}
 
-	var keyFileLength = keyFileBin.length;	
+	var keyFileLength = keyFileBin.length;	                                //should be at least 32
 		cutIndex = Math.floor(keyFileLength * cutPercent / 100);			//cut operation for the key
 	
 	//now do the cut for the input file
@@ -515,20 +580,22 @@ function getMac(inputBin){
 	
 	//the process proper begins here
 	var	whiteBin = new Uint8Array(whiteningBox.value.split(',')),
-		repeats = Math.ceil(32 / whiteBin.length), 			//block length is 32 bytes, later reduced to 16
-		holder = new Array(repeats);
-	for(var i = 0; i < repeats; i++) holder[i] = whiteBin;
+		whiteRepeats = Math.ceil(32 / whiteBin.length), 			//block length is 32 bytes, later reduced to 16
+		holder = new Array(whiteRepeats);
+	for(var i = 0; i < whiteRepeats; i++) holder[i] = whiteBin;
 	whiteBin = concatUi8(holder).slice(0,32);
 	
 	var macBin = new Uint8Array(whiteBin),					//start with the whitening data
-		nBlocks = Math.ceil(inputLength / 32);
+		nBlocks = Math.ceil(inputLength / 32),
+        beginBlock, endBlock;
 
 	for(var i = 0; i < nBlocks; i++){
 		beginBlock = (cutIndex + i*32) % keyFileLength;		
-		endBlock = (cutIndex + (i+1)*32) % keyFileLength
+		endBlock = (cutIndex + (i+1)*32) % keyFileLength;
+
 		macBin = arrayXor(inputBin.slice(i*32,(i+1)*32),macBin);				//xor a piece of the plaintext, and 
 		macBin = transpose(byteLFG(macBin),6);  								//shuffle the result with LFG + transposition. Observe that row length is 6
-		macBin = byteLFG(arrayXor(getKeyBlock(beginBlock,endBlock),macBin))		//last LFG after xoring key
+		macBin = byteLFG(arrayXor(getKeyBlock(beginBlock,endBlock,0),macBin))	//last LFG after xoring key
 	}
 	return halfArray(macBin)				//get only 16 bytes of output by xoring the halves (with the 1st half transposed)
 }
@@ -721,7 +788,12 @@ downloadURL = function(data, fileName) {
 <p>LFG operations tends to introduce spurious correlations that need to be ironed out by transposition. Also, bytes in a single LFG (except the last) only affect those that follow them. Therefore the basic algorithm is two LFGs with a transposition between them. The result is still reversible so, if you don't want that,  do the xor thing (there's a checkbox for that below).</p>
 <p>&nbsp;</p>
 <h2>Step 1. Key file input</h2>
-<p>We might begin by taking a file from the computer and loading it in the box below. Although invisible here, the file will be loaded as a byte array. Uncheck the box to save memory for large files.</p>
+<p>We might begin by taking a file from the computer and loading it in the box below. Although invisible here, the file will be loaded as a byte array. Uncheck the "Show as image" box to save memory for large files.</p>
+<p>We can concentrate its entropy by applying raw <a href="https://en.wikipedia.org/wiki/Deflate" target="_blank">Deflate</a> compression before using it. The file often will become smaller as a result but the process may be slow with large files. Select this before loading the file.</p>
+<p>&nbsp;&nbsp;<input type="radio" name="comprModes" id="noCompr" onClick="clearDone();" title="no compression" checked/>
+    &nbsp; No compression&nbsp;&nbsp;
+    <input type="radio" name="comprModes" id="withCompr" onClick="clearDone();" title='compress'/>
+    &nbsp; Compress</p>
 <h3>Key File</h3>
 <table id="keyFileTable">
 <tr>
@@ -742,17 +814,16 @@ downloadURL = function(data, fileName) {
 </table>
 
 <p>If we use the result to encrypt another file, we can save computation by processing only the number of bytes we need rather than the whole file:</p>
-
 <p>&nbsp;&nbsp;<input type="radio" name="lengthModes" id="shortLength" onClick="clearDone();" title="take only plain file length plus 50%" checked/>
 &nbsp; Process only required bytes&nbsp;&nbsp;
 <input type="radio" name="lengthModes" id="fullLength" onClick="clearDone();" title='use the full key file'/>
 &nbsp; Process whole file</p>
-<p>We can process the whole thing in one block or split it into smaller blocks and then process each one. The box below sets the block size, in bytes (0 means process all at once; 1 means no process).</p>
+<p>We can process the whole thing in one block or split it into smaller blocks and then process each one. The box below sets the block size, in bytes (0 means no process; negative means process all at once).</p>
 <h3>Block size</h3>
 <p>
   <input type="text" id="lengthBox" style="font-size:larger;background-color:#E4F7FF;width:200px;" onClick="clearDone();" title="number of bits to be processed at a time (0 is all of them)" value="23">
   </input>
-&nbsp;&nbsp;&nbsp;&nbsp;Allowed values are integers 0 to file length (default 23).</p>
+&nbsp;&nbsp;&nbsp;&nbsp;Allowed values are integers 0 to file length (default 23), plus negative.</p>
 <p>Adding a repeating sequence at start the process for the first block helps with files of poor randomness. If you check the Whitening box the sequence will also be  xored after processing each block, which adds extra security if the sequence is kept secret.</p>
 <h3>Initial sequence</h3>
 <p>
@@ -771,12 +842,12 @@ downloadURL = function(data, fileName) {
 &nbsp;&nbsp;&nbsp;&nbsp;Allowed values are 0 to 100. Decimals are OK.</p>
 <br>
 <h2>Step 2. Plain file / encrypted file</h2>
-<p>Here we can optionally input a second file, which also loads as a byte array. If the key file is too small to encrypt this file, a warning will appear above. If the file is encrypted and the key file and all settings are the same as for encryption, it will be decrypted below. A cut operation using the percentage below will be applied to the plain file content at the start, and the reverse cut to the resulting encrypted material at the end of the process. In order to overcome the malleability of the encryption process, you can make a message authentication code (MAC). The algorithm for this is explained below.</p>
+<p>Here we can optionally input a second file, which also loads as a byte array. If the key file is too small to encrypt this file, a warning will appear above. If the file is encrypted and the key file and all settings are the same as for encryption, it will be decrypted below. A cut operation using the percentage below will be applied to the plain file content at the start, and the reverse cut to the resulting encrypted material at the end of the process. In order to overcome the malleability of the encryption process, a message authentication code (MAC) is taken. The algorithm for this is explained below.</p>
 <h3>File to be encrypted/decrypted</h3>
 <div name="plainBox" class="cssbox" id="plainBox" style="font-size:larger;background-color:#E4F7FF;width:500px;" title="Enter your plaintext (or ciphertext, when decrypting) here" onKeyUp="processPlain();" onPaste="processPlain();"></div>
   <button class="cssbutton" id="clearPlainBtn" onClick="plainBox.innerHTML = ''; clearDone(); delete plainBin;">Clear</button>
   &nbsp;&nbsp;<input class="custom-file-input" type="file" id="plainFile" onChange="loadPlainFile();" onClick="this.value = '';clearDone();" title="open dialog to select file to load"/>
-   &nbsp;&nbsp;<button class="cssbutton" id="plainMACBtn" onClick="clearDone(); plainMAC();">MAC</button>
+   &nbsp;&nbsp;
    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="plainMACmsg"></span>
 
    <h3>Plain cut location (percent)</h3>
@@ -785,6 +856,13 @@ downloadURL = function(data, fileName) {
      %
   </input>
   &nbsp;&nbsp;&nbsp;&nbsp;Allowed values are 0 to 100. Decimals are OK.</p>
+  <p>As with the Key file, the Plain file can be compressed in order to make the encrypted file smaller. If compression was used for encryption, we must use decompression for decryption.</p>
+<p>&nbsp;&nbsp;<input type="radio" name="plainModes" id="noComprPlain" onClick="clearDone();" title="no compression" checked/>
+  &nbsp; No compression&nbsp;&nbsp;
+  <input type="radio" name="plainModes" id="withComprPlain" onClick="clearDone();" title='compress'/>
+  &nbsp; Compress&nbsp;&nbsp;
+  <input type="radio" name="plainModes" id="withDecomprPlain" onClick="clearDone();" title='decompress'/>
+  &nbsp; Decompress</p>
   <br>
   <br>
 <h2>Step 3. Keystream file</h2>
@@ -793,7 +871,9 @@ downloadURL = function(data, fileName) {
 <p>&nbsp;&nbsp;<input type="radio" name="directionModes" id="forwardTick" onClick="clearDone();" title='use forward LFG and transpose' checked/>
 &nbsp; Forward&nbsp;&nbsp;
 <input type="radio" name="directionModes" id="reverseTick" onClick="clearDone();" title='use reverse LFG and transpose'/>
-&nbsp; Reverse</p>
+&nbsp; Reverse&nbsp;&nbsp;
+<input type="radio" name="directionModes" id="reverseDecTick" onClick="clearDone();" title='use reverse LFG and transpose, plus decompress result'/>
+&nbsp; Reverse & decompress</p>
 
 <p>And now, the all important button. To make the process non-reversible, keep the first box checked, which splits the keystream in two halves, does a transposition on the first, and xors it with the second.</p>
 
@@ -824,11 +904,10 @@ downloadURL = function(data, fileName) {
 </table>
 
 <h2>Step 4. Encrypted / decrypted file</h2>
-<p>And here is the second file after its bits have been xored with an equal number of bytes from the keystream file, starting from the beginning. There is a button to save this one too, as well as one to make a message authentication code (MAC) for this file. For added security, take the MAC of the input file (button in Step 2 above) when encrypting and send it along with the encrypted file. The MAC of the decrypted file, taken with the button below, should be the same. The algorithm that makes the MAC is described below.</p>
+<p>And here is the second file after its bits have been xored with an equal number of bytes from the keystream file, starting from the beginning. There is a button to save this one too. For added security, record the MAC of the input file when encrypting and send it along with the encrypted file. The MAC displayed for the decrypted file should be the same. The algorithm that makes the MAC is described below.</p>
 
 <h3>Encrypted/decrypted file</h3>
 <span id="cipherBox" class="cssbox" style="font-size:larger;background-color:#DCF2D1;width:500px;" contenteditable="true"></span>&nbsp;&nbsp;<button class="cssbutton" id="savePlainBtn" onClick="savePlain();">Save</button>&nbsp;&nbsp;
-<button class="cssbutton" id="cipherMACBtn" onClick="clearDone(); cipherMAC();">MAC</button>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="cipherMACmsg"></span>
 
 <p> This is how the MAC is made: take the initial byte sequence, expand it to 32 bytes, and xor it with the first 32 bytes of the input file (no cut), then take the LFG and a transposition with row length 6, xor 32 bytes of the key bytes (after cut) and do another LFG. Repeat the process for all the remaining file bytes, using the previous 32-byte result instead of the initial sequence, and the following 32 bytes of the plain and key files, stretched to 32-byte length with zeros if necessary. At the end, split the result in the middle and xor the two halves to get 16 bytes, which are then converted to hexadecimal for display.</p>
